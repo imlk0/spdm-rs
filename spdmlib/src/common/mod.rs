@@ -6,6 +6,9 @@ pub mod key_schedule;
 pub mod opaque;
 pub mod session;
 pub mod spdm_codec;
+mod end_session_req;
+mod end_session_rsp;
+mod error_rsp;
 
 use crate::message::SpdmRequestResponseCode;
 use crate::{crypto, protocol::*};

@@ -31,7 +31,11 @@ enum_builder! {
         // After send KEY_EXHCNAGE, before send FINISH
         SpdmSessionHandshaking => 0x1,
         // After send FINISH, before END_SESSION
-        SpdmSessionEstablished => 0x2
+        SpdmSessionEstablished => 0x2,
+        // After send END_SESSION, before receive END_SESSION_ACK
+        SpdmSessionEndSessionSent => 0x3,
+        // After received END_SESSION, before send END_SESSION_ACK
+        SpdmSessionEndSessionReceived => 0x4
     }
 }
 impl Default for SpdmSessionState {

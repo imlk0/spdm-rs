@@ -6,8 +6,10 @@ use crate::common::{self, SpdmDeviceIo, SpdmTransportEncap};
 use crate::common::{ManagedBufferA, ST1};
 use crate::config;
 use crate::error::{SpdmResult, SPDM_STATUS_RECEIVE_FAIL, SPDM_STATUS_SEND_FAIL};
+use crate::message::SpdmRequestResponseCode;
 use crate::protocol::*;
 
+use codec::Writer;
 use spin::Mutex;
 extern crate alloc;
 use alloc::sync::Arc;
@@ -94,7 +96,14 @@ impl RequesterContext {
 
     #[maybe_async::maybe_async]
     pub async fn end_session(&mut self, session_id: u32) -> SpdmResult {
-        self.send_receive_spdm_end_session(session_id).await
+        let mut response_buffer = [0u8; config::MAX_SPDM_MSG_SIZE];
+        let mut writer = Writer::init(&mut response_buffer);
+        let send_buffer = self
+            .common
+            .write_spdm_end_session(session_id, &mut writer)?;
+        self.send_message(Some(session_id), send_buffer, false)
+            .await?;
+        Ok(())
     }
 
     #[maybe_async::maybe_async]
@@ -131,10 +140,29 @@ impl RequesterContext {
                 .await?
         };
 
-        let mut device_io = self.common.device_io.lock();
-        let device_io: &mut (dyn SpdmDeviceIo + Send + Sync) = device_io.deref_mut();
+        {
+            let mut device_io = self.common.device_io.lock();
+            let device_io: &mut (dyn SpdmDeviceIo + Send + Sync) = device_io.deref_mut();
 
-        device_io.send(Arc::new(&transport_buffer[..used])).await
+            device_io.send(Arc::new(&transport_buffer[..used])).await?;
+        }
+
+        if is_app_message {
+            // If we are sending app message, there is no need to update internal state.
+            return Ok(());
+        }
+
+        /* Change status after response successfully send, currently we only support checking sending for END_SESSION and END_SESSION_ACK */
+        let opcode = send_buffer[1];
+        if opcode == SpdmRequestResponseCode::SpdmResponseEndSessionAck.get_u8() {
+            let session = self.common.get_session_via_id(session_id.unwrap()).unwrap();
+            session.teardown();
+        } else if opcode == SpdmRequestResponseCode::SpdmRequestEndSession.get_u8() {
+            let session = self.common.get_session_via_id(session_id.unwrap()).unwrap();
+            session.teardown();
+        }
+
+        Ok(())
     }
 
     #[maybe_async::maybe_async]

@@ -13,7 +13,6 @@ mod encap_digest;
 mod encap_error;
 #[cfg(feature = "mut-auth")]
 mod encap_req;
-mod end_session_req;
 mod finish_req;
 mod get_capabilities_req;
 mod get_certificate_req;

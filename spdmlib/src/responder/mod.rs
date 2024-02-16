@@ -15,7 +15,6 @@ mod encap_get_certificate;
 mod encap_get_digest;
 #[cfg(feature = "mut-auth")]
 mod encap_rsp;
-mod end_session_rsp;
 mod finish_rsp;
 mod heartbeat_rsp;
 mod key_exchange_rsp;

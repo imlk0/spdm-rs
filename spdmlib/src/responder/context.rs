@@ -65,10 +65,12 @@ impl ResponderContext {
         let send_buffer = if self.common.negotiate_info.req_data_transfer_size_sel != 0
             && (send_buffer.len() > self.common.negotiate_info.req_data_transfer_size_sel as usize)
         {
-            self.write_spdm_error(SpdmErrorCode::SpdmErrorResponseTooLarge, 0, &mut writer);
+            self.common
+                .write_spdm_error(SpdmErrorCode::SpdmErrorResponseTooLarge, 0, &mut writer);
             writer.used_slice()
         } else if is_app_message && session_id.is_none() {
-            self.write_spdm_error(SpdmErrorCode::SpdmErrorSessionRequired, 0, &mut writer);
+            self.common
+                .write_spdm_error(SpdmErrorCode::SpdmErrorSessionRequired, 0, &mut writer);
             writer.used_slice()
         } else {
             send_buffer
@@ -371,6 +373,18 @@ impl ResponderContext {
         Ok((used, secured_message))
     }
 
+    #[maybe_async::maybe_async]
+    pub async fn end_session(&mut self, session_id: u32) -> SpdmResult {
+        let mut response_buffer = [0u8; config::MAX_SPDM_MSG_SIZE];
+        let mut writer = Writer::init(&mut response_buffer);
+        let send_buffer = self
+            .common
+            .write_spdm_end_session(session_id, &mut writer)?;
+        self.send_message(Some(session_id), send_buffer, false)
+            .await?;
+        Ok(())
+    }
+
     fn dispatch_secured_message<'a>(
         &mut self,
         session_id: u32,
@@ -434,19 +448,22 @@ impl ResponderContext {
                         | SpdmRequestResponseCode::SpdmRequestPskExchange
                         | SpdmRequestResponseCode::SpdmRequestHeartbeat
                         | SpdmRequestResponseCode::SpdmRequestKeyUpdate
-                        | SpdmRequestResponseCode::SpdmRequestEndSession => self
-                            .handle_error_request(
+                        | SpdmRequestResponseCode::SpdmRequestEndSession
+                        | SpdmRequestResponseCode::SpdmResponseEndSessionAck => {
+                            self.common.handle_error_request(
                                 SpdmErrorCode::SpdmErrorUnexpectedRequest,
                                 bytes,
                                 writer,
-                            ),
+                            )
+                        }
 
-                        SpdmRequestResponseCode::SpdmRequestResponseIfReady => self
-                            .handle_error_request(
+                        SpdmRequestResponseCode::SpdmRequestResponseIfReady => {
+                            self.common.handle_error_request(
                                 SpdmErrorCode::SpdmErrorUnsupportedRequest,
                                 bytes,
                                 writer,
-                            ),
+                            )
+                        }
 
                         _ => (Err(SPDM_STATUS_UNSUPPORTED_CAP), None),
                     },
@@ -474,9 +491,9 @@ impl ResponderContext {
                             self.handle_spdm_key_update(session_id, bytes, writer)
                         }
 
-                        SpdmRequestResponseCode::SpdmRequestEndSession => {
-                            self.handle_spdm_end_session(session_id, bytes, writer)
-                        }
+                        SpdmRequestResponseCode::SpdmRequestEndSession => self
+                            .common
+                            .handle_spdm_end_session(session_id, bytes, writer),
                         SpdmRequestResponseCode::SpdmRequestVendorDefinedRequest => {
                             self.handle_spdm_vendor_defined_request(Some(session_id), bytes, writer)
                         }
@@ -488,19 +505,22 @@ impl ResponderContext {
                         | SpdmRequestResponseCode::SpdmRequestKeyExchange
                         | SpdmRequestResponseCode::SpdmRequestPskExchange
                         | SpdmRequestResponseCode::SpdmRequestFinish
-                        | SpdmRequestResponseCode::SpdmRequestPskFinish => self
-                            .handle_error_request(
+                        | SpdmRequestResponseCode::SpdmRequestPskFinish
+                        | SpdmRequestResponseCode::SpdmResponseEndSessionAck => {
+                            self.common.handle_error_request(
                                 SpdmErrorCode::SpdmErrorUnexpectedRequest,
                                 bytes,
                                 writer,
-                            ),
+                            )
+                        }
 
-                        SpdmRequestResponseCode::SpdmRequestResponseIfReady => self
-                            .handle_error_request(
+                        SpdmRequestResponseCode::SpdmRequestResponseIfReady => {
+                            self.common.handle_error_request(
                                 SpdmErrorCode::SpdmErrorUnsupportedRequest,
                                 bytes,
                                 writer,
-                            ),
+                            )
+                        }
 
                         _ => (Err(SPDM_STATUS_UNSUPPORTED_CAP), None),
                     },
@@ -509,6 +529,24 @@ impl ResponderContext {
             }
             SpdmSessionState::SpdmSessionNotStarted => (Err(SPDM_STATUS_UNSUPPORTED_CAP), None),
             SpdmSessionState::Unknown(_) => (Err(SPDM_STATUS_UNSUPPORTED_CAP), None),
+            SpdmSessionState::SpdmSessionEndSessionSent => {
+                match SpdmMessageHeader::read(&mut reader) {
+                    Some(message_header) => match message_header.request_response_code {
+                        SpdmRequestResponseCode::SpdmRequestEndSession => self
+                            .common
+                            .handle_spdm_end_session(session_id, bytes, writer),
+                        SpdmRequestResponseCode::SpdmResponseEndSessionAck => (
+                            self.common.handle_spdm_end_session_ack(session_id, bytes),
+                            None,
+                        ),
+                        _ => (Err(SPDM_STATUS_UNSUPPORTED_CAP), None),
+                    },
+                    None => (Err(SPDM_STATUS_UNSUPPORTED_CAP), None),
+                }
+            }
+            SpdmSessionState::SpdmSessionEndSessionReceived => {
+                (Err(SPDM_STATUS_UNSUPPORTED_CAP), None)
+            }
         }
     }
 
@@ -579,7 +617,7 @@ impl ResponderContext {
                         }
                     }
 
-                    self.handle_error_request(
+                    self.common.handle_error_request(
                         SpdmErrorCode::SpdmErrorUnexpectedRequest,
                         bytes,
                         writer,
@@ -589,17 +627,17 @@ impl ResponderContext {
                 SpdmRequestResponseCode::SpdmRequestPskFinish
                 | SpdmRequestResponseCode::SpdmRequestHeartbeat
                 | SpdmRequestResponseCode::SpdmRequestKeyUpdate
-                | SpdmRequestResponseCode::SpdmRequestEndSession => self.handle_error_request(
-                    SpdmErrorCode::SpdmErrorUnexpectedRequest,
-                    bytes,
-                    writer,
-                ),
+                | SpdmRequestResponseCode::SpdmRequestEndSession => self
+                    .common
+                    .handle_error_request(SpdmErrorCode::SpdmErrorUnexpectedRequest, bytes, writer),
 
-                SpdmRequestResponseCode::SpdmRequestResponseIfReady => self.handle_error_request(
-                    SpdmErrorCode::SpdmErrorUnsupportedRequest,
-                    bytes,
-                    writer,
-                ),
+                SpdmRequestResponseCode::SpdmRequestResponseIfReady => {
+                    self.common.handle_error_request(
+                        SpdmErrorCode::SpdmErrorUnsupportedRequest,
+                        bytes,
+                        writer,
+                    )
+                }
 
                 _ => (Err(SPDM_STATUS_UNSUPPORTED_CAP), None),
             },
